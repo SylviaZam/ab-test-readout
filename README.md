@@ -1,128 +1,100 @@
-# AB-Experimentation GTM Playbook
+# A/B Test Readout: Cookie Cats Gate Experiment
 
-Data-driven A/B testing playbook for Go-to-Market decisions.
-It ingests a public experiment dataset, runs statistical tests (two-proportion z-tests, confidence intervals, effect sizes), estimates **power** and **MDE**, and exports a stakeholder-ready Excel workbook plus a quick visual preview.
+[![Tests](https://github.com/SylviaZam/ab-test-readout/actions/workflows/tests.yml/badge.svg)](https://github.com/SylviaZam/ab-test-readout/actions/workflows/tests.yml)
 
-> **Skills showcased:** SQL-first thinking, Python for statistical rigor, experiment design, power/MDE, executive storytelling, reproducibility.
+This is a reusable pipeline that takes a user-level A/B test export and produces a decision. It checks the data first, then tests each metric, then writes an Excel readout and charts that a product team can act on. It is shown here on a public mobile-game experiment with 90,189 players.
 
----
+## The experiment
 
-## What’s inside
-- **Notebook:** [`notebooks/01_ingest_eda.ipynb`](notebooks/01_ingest_eda.ipynb)  
-- **Sample Excel report:** [`notebooks/reports/ab_results_cookie_cats.xlsx`](notebooks/reports/ab_results_cookie_cats.xlsx)  
-- **Preview chart:**  
-  ![Summary chart](assets/summary_chart.png)
+In Cookie Cats, a puzzle game, players hit a "gate" that makes them wait or pay before continuing. The test moved the first gate from level 30 (control, `gate_30`) to level 40 (treatment, `gate_40`). The test tracked whether each player came back 1 day and 7 days after installing.
 
----
+## Result
 
-## Situational context
+**Recommendation: keep the gate at level 30.** Moving it to level 40 lowered 7-day retention by 0.82 percentage points, with a 95% confidence interval of -1.33 to -0.31. Adjusted for testing two metrics, p = 0.003. 1-day retention also dipped (-0.59 pp), but that difference is within noise (p = 0.074).
 
-Now, this repo is to be applied for a similar **hypothetical** case advising a product team evaluating a feature rollout. The team ran a clean A/B test and needs a **decision-ready** readout: effect size, power/MDE, significance, and a clear ship/iterate call.
+![Effect on retention with 95% confidence intervals](assets/effect_ci.png)
 
-The sample **dataset context** is the use of the App store **Cookie Cats** puzzle game that uses “gates” to block progress. This public A/B test moved the first gate from **level 30** (control: `gate_30`) to **level 40** (treatment: `gate_40`). The CSV tracks whether players came back **Day-1** and **Day-7** after install.
+| Metric | Level 30 | Level 40 | Difference | 95% CI | p (Holm) | Smallest detectable effect* |
+|---|---|---|---|---|---|---|
+| Day-1 retention | 44.82% | 44.23% | -0.59 pp | -1.24 to +0.06 | 0.074 | 0.93 pp |
+| Day-7 retention | 19.02% | 18.20% | **-0.82 pp** | -1.33 to -0.31 | **0.003** | 0.73 pp |
 
-**Business question**
-- Does the treatment improve retention enough to merit rollout, given uncertainty and sample size?
+\*At 80% power and α = 0.05 with these sample sizes. The Day-7 drop is larger than the smallest effect this test could reliably detect. The Day-1 dip is smaller, so a real but small Day-1 effect can't be ruled out.
 
-**What the sample represents**
-- Public “Cookie Cats” dataset (game retention) used as a stand-in for app features.
-- Notebook runs two-proportion z-tests, CIs, **Cohen’s h**, **observed power**, and **MDE**.
+A bootstrap with 20,000 resamples puts 99.9% of the Day-7 differences below zero:
 
-**How to use the output**
-- **Summary**: absolute delta (pp), relative lift, p-value, effect size, significance flag.
-- **Power_MDE**: whether you had enough sample to detect a practical effect.
+![Bootstrap distribution of the Day-7 difference](assets/bootstrap.png)
 
-**Decision patterns**
-- If **p < 0.05** and lift is practical → ship/scale.
-- If **under-powered** → extend or re-scope (targeted cohorts, longer run, bigger effect).
----
+Rounds played, a secondary metric, are heavily skewed (median 16-17, maximum 49,854). Medians are nearly identical between the two groups (Mann-Whitney p = 0.05), so the retention drop is not explained by a collapse in play.
 
-**Columns**
-- `userid` — anonymous player ID (one row per user)
-- `version` — `gate_30` (control) or `gate_40` (treatment)
-- `sum_gamerounds` — total rounds played (engagement proxy)
-- `retention_1` — 0/1, returned the next day (D1)
-- `retention_7` — 0/1, returned seven days later (D7)
+## Checks run before reading any result
 
----
+| Check | Finding | Status |
+|---|---|---|
+| Sample ratio mismatch | 44,700 vs 45,489 players (50.4% in treatment); chi-square p = 0.009 against a 50/50 plan | **Warning** |
+| Duplicate users | 0 | OK |
+| Missing outcomes | 0 | OK |
+| Extreme values | 1 player with 49,854 rounds (more than 40x the 99.9th percentile) | Note: affects engagement only |
+| Never played | 4.4% of players | Kept in (intent-to-treat) |
 
-## Executive summary (from this run)
-- **Day-1 retention:** Control = **44.82%**, Treatment = **44.23%** → **Δ = −0.59 pp**, **Lift = −1.32%**, **p = 0.0744**, **Significant @5%: No**  
-- **Day-7 retention:** Control = **19.02%**, Treatment = **18.20%** → **Δ = −0.82 pp**, **Lift = −4.31%**, **p = 0.0016**, **Significant @5%: Yes**
+**The sample-ratio warning matters.** A 50/50 assignment should not miss by this much by chance. The usual causes are an assignment bug or uneven logging between groups. The dataset doesn't reveal which, so the readout states it as a caveat on the decision. On a real team, this would go to engineering before anything ships.
 
-**Recommendation:** Treatment underperforms on Day-7 retention with statistical significance. Keep **Control** as default, investigate the gating strategy behind Treatment, and consider a follow-up test with tighter success criteria. Day-1 shows no significant difference.
+Every retention rate is also recomputed in SQL straight from the raw CSV ([`sql/variant_metrics.sql`](sql/variant_metrics.sql), run in DuckDB) and matched against the Python numbers. All 4 match.
 
----
+## Method
 
-## Why this matters (GTM & Strategy roles)
-- Turns raw experiment data into **clear investment recommendations** (lift, significance, uncertainty).
-- Quantifies **tradeoffs** with **Minimum Detectable Effect** at 80% power.
-- Produces **executive-ready artifacts** (Excel with formatted tables and charts) that non-technical stakeholders can use.
-
----
-
-## Methods
-- **Primary tests:** Two-proportion **z-tests** (two-sided), pooled SE under H0.  
-- **Uncertainty:** 95% confidence intervals on absolute difference.  
-- **Effect size:** **Cohen’s h** for proportions.  
-- **Power & MDE:** Observed power at current sample sizes and **MDE** for 80% power (@ α = 0.05).  
-- **Stratification sanity:** Optional cut by engagement deciles to check stability.
-
----
-
-## Outputs
-The notebook writes a formatted Excel workbook with:
-- **Summary:** Control vs Treatment rates, absolute difference (pp), relative lift (%), p-value, Cohen’s h, significance flag, plus a bar chart.  
-- **Power_MDE:** Observed power and MDE per metric.  
-- **Variant Balance / Variant Metrics:** Sample balance and mean metrics by variant.  
-- **Retention1 by Decile:** Sanity check across engagement deciles.
-
-Open the sample: [`notebooks/reports/ab_results_cookie_cats.xlsx`](notebooks/reports/ab_results_cookie_cats.xlsx)
-
----
-
-## Repository structure
-
-data/                 # public CSV (auto-downloaded)
-notebooks/
-  └── 01_ingest_eda.ipynb
-  └── reports/
-      └── ab_results_cookie_cats.xlsx   # sample stakeholder workbook (committed for reviewers)
-reports/              # optional alternative location for reports
-src/                  # reserved for future helpers/modules
-sql/                  # optional SQL validation (e.g., DuckDB)
-assets/
-  └── summary_chart.png                  # preview image for README
-requirements.txt
-README.md
-
-
----
-
-## Interpretation guide
-- **Absolute difference (pp)** is the most intuitive way to size impact; relative lift (%) helps compare across metrics with different baselines.
-- **p-value < 0.05** indicates statistical evidence; always check confidence intervals to understand uncertainty.
-- **Practical significance matters:** weigh impact vs. cost, UX tradeoffs, and operational constraints.
-- **Power & MDE:** If observed power is low, increase sample size or test duration to reliably detect meaningful effects.
-- **Validate assumptions:** randomization integrity, no SRM (sample ratio mismatch), and stability across key segments.
-
----
+- **Primary test:** a two-sided two-proportion z-test with pooled standard error, plus a 95% Wald interval on the difference. Wald intervals are fine at about 45,000 users per arm.
+- **Two metrics, one decision:** p-values are Holm-adjusted, so testing two metrics doesn't inflate false positives.
+- **Effect size and power:** Cohen's h, observed power, and the minimum detectable effect at 80% power.
+- **Bootstrap:** 20,000 resamples per arm. For a 0/1 outcome, resampling users is exactly a binomial draw, so the bootstrap is fast and exact.
+- **Intent-to-treat:** every assigned player counts, including the 4.4% who never played and so never reached either gate. Including them dilutes the effect toward zero, which makes the result conservative.
+- **What the analysis deliberately avoids:** splitting players by rounds played. Rounds happen after assignment, so they are partly an outcome of the gate, and comparing groups within rounds-played bands would bias the result. The [2025 first-pass notebook](notebooks/2025_first_pass.ipynb) made that mistake; the pipeline drops it.
 
 ## Limitations
-- Assumes independent users and proper randomization; external shocks (seasonality, promos) can bias results.
-- Binary outcomes are modeled via two-proportion tests; for other metrics consider GLM/OLS or non-parametric tests.
 
----
+- **The data shows that retention dropped, not why.** One hypothesis is that an earlier forced break keeps players wanting more, but this test can't confirm it.
+- **The sample-ratio mismatch is unexplained** (see above).
+- **Retention is measured once per player**, with no pre-test history, so variance-reduction methods like CUPED aren't possible here.
+- **The data is from one game and one time period.** The effect may not hold elsewhere.
 
-## Reproducibility
+## Run it
+
 ```bash
-# 1) Create and activate a virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-
-# 2) Install dependencies
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# 3) Run the notebook
-jupyter notebook
-# Open notebooks/01_ingest_eda.ipynb and Run All
+python -m src.ab_cli                      # Cookie Cats, writes reports/ and assets/
+```
+
+It works on any one-row-per-user export with 0/1 outcomes:
+
+```bash
+python -m src.ab_cli --data my_test.csv --unit user_id --variant arm \
+  --control A --treatment B --metrics converted,retained_d7 --engagement none
+```
+
+The run stops with exit code 1 if a check fails outright, such as duplicate users or unexpected variant names.
+
+**Tests:** 16 tests check each formula against statsmodels and SciPy, confirm a known effect is detected and a null effect is not, and run the full command line. Run them with `pip install pytest && python -m pytest -q`.
+
+## Outputs
+
+| File | Contents |
+|---|---|
+| `reports/ab_readout.xlsx` | Sheets: Readout (the decision in one sentence), Results, Checks, Engagement, SQL_crosscheck |
+| `assets/effect_ci.png`, `assets/bootstrap.png` | The charts above |
+
+## Repository layout
+
+```
+data/cookie_cats.csv        public dataset (90,189 players)
+src/stats.py                z-test, CI, Cohen's h, power, MDE, SRM, Holm, bootstrap
+src/analysis.py             loading, data checks, per-metric results, decision text
+src/sql_check.py            runs sql/variant_metrics.sql in DuckDB and compares
+src/report.py               Excel readout and charts
+src/ab_cli.py               command-line entry point
+tests/                      pytest suite (runs on every push)
+notebooks/2025_first_pass.ipynb   original exploration, kept for reference
+```
+
+Data: the public Cookie Cats A/B test dataset, as distributed for teaching. Built by [Sylvia Zamora](https://sylviazamora.com).
